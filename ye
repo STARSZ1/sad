@@ -1,0 +1,413 @@
+<?php
+class DynamicModel {
+    private $conn;
+
+    public function __construct($db) {
+        $this->conn = $db;
+    }
+
+    // Create a new record
+    public function create($table, $data, $file = null) {
+        // Handle image upload if provided
+        if ($file) {
+            $uploadResult = $this->uploadImage($file);
+            if (is_string($uploadResult)) {
+                $data['project_image'] = $uploadResult;
+            } else {
+                return $uploadResult;
+            }
+        }
+
+        $columns = implode(", ", array_keys($data));
+        $placeholders = implode(", ", array_fill(0, count($data), "?"));
+        $query = "INSERT INTO {$table} ({$columns}) VALUES ({$placeholders})";
+
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) {
+            return "Error preparing statement: " . $this->conn->error;
+        }
+
+        $types = str_repeat('s', count($data));
+        $stmt->bind_param($types, ...array_values($data));
+
+        if (!$stmt->execute()) {
+            return "Error executing statement: " . $stmt->error;
+        }
+
+        return true;
+    }
+
+    // Read all records
+    public function readall($table) {
+        $query = "SELECT * FROM {$table}";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) {
+            return "Error preparing statement: " . $this->conn->error;
+        }
+
+        $stmt->execute();
+        $result = $stmt->get_result();
+
+        return $result->fetch_all(MYSQLI_ASSOC);
+    }
+
+    // Read a single record
+    public function read_single($table, $columns = '*', $where) {
+        $query = "SELECT {$columns} FROM {$table} WHERE {$where} LIMIT 1";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) {
+            return "Error preparing statement: " . $this->conn->error;
+        }
+
+        $stmt->execute();
+        $result = $stmt->get_result();
+
+        return $result->fetch_assoc();
+    }
+
+    // Update a record
+    public function update($table, $data, $where, $file = null) {
+        if ($file) {
+            $uploadResult = $this->uploadImage($file);
+            if (is_string($uploadResult)) {
+                $data['project_image'] = $uploadResult;
+            } else {
+                return $uploadResult;
+            }
+        }
+
+        $set_clause = implode(" = ?, ", array_keys($data)) . " = ?";
+        $query = "UPDATE {$table} SET {$set_clause} WHERE {$where}";
+
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) {
+            return "Error preparing statement: " . $this->conn->error;
+        }
+
+        $types = str_repeat('s', count($data));
+        $stmt->bind_param($types, ...array_values($data));
+
+        if (!$stmt->execute()) {
+            return "Error executing statement: " . $stmt->error;
+        }
+
+        return true;
+    }
+
+    // Delete a record
+    public function delete($table, $where) {
+        $query = "DELETE FROM {$table} WHERE {$where}";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) {
+            return "Error preparing statement: " . $this->conn->error;
+        }
+
+        if (!$stmt->execute()) {
+            return "Error executing statement: " . $stmt->error;
+        }
+
+        return true;
+    }
+
+    // Fetch hobbies
+    public function readall_hobbies() {
+        $query = "SELECT * FROM hobbies_tbl";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) {
+            return "Error preparing statement: " . $this->conn->error;
+        }
+
+        $stmt->execute();
+        $result = $stmt->get_result();
+        return $result->fetch_all(MYSQLI_ASSOC);
+    }
+
+    // Upload an image
+    public function uploadImage($file) {
+        $target_dir = "uploads/";
+        $target_file = $target_dir . basename($file["name"]);
+        $imageFileType = strtolower(pathinfo($target_file, PATHINFO_EXTENSION));
+
+        // Check if the file was uploaded
+        if (!is_uploaded_file($file['tmp_name'])) {
+            return "File upload error.";
+        }
+
+        // Check if file is an image
+        $check = getimagesize($file["tmp_name"]);
+        if ($check === false) {
+            return "File is not an image.";
+        }
+
+        // Check file size (example: limit to 5MB)
+        if ($file["size"] > 5000000) {
+            return "Sorry, your file is too large.";
+        }
+
+        // Allow only specific formats
+        $allowed = ["jpg", "jpeg", "png", "gif", "webp"];
+        if (!in_array($imageFileType, $allowed)) {
+            return "Sorry, only JPG, JPEG, PNG, GIF & WEBP files are allowed.";
+        }
+
+        // Try to upload file
+        if (move_uploaded_file($file["tmp_name"], $target_file)) {
+            return basename($file["name"]);
+        } else {
+            return "Sorry, there was an error uploading your file.";
+        }
+    }
+}
+?>
+<?php
+require_once 'config/database.php';
+require_once 'models/DynamicModel.php';
+
+session_start(); // Start the session for notifications
+
+$database = new Database();
+$db = $database->getConnection();
+$model = new DynamicModel($db);
+
+// Handle Create, Update, Delete requests
+if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+    $success = false;
+    $message = '';
+
+    // Update Description
+    if (isset($_POST['create_description'])) {
+        $data = ['aboutme_desc' => $_POST['description']];
+        $success = $model->update('aboutme_tbl', $data, 'aboutme_id=1');
+        $message = $success ? 'Description updated successfully.' : 'Failed to update description.';
+    }
+    // Add Skill
+    elseif (isset($_POST['create_skill'])) {
+        $data = ['skills' => $_POST['skill']];
+        $success = $model->create('skills_tbl', $data);
+        $message = $success ? 'Skill added successfully.' : 'Failed to add skill.';
+    }
+    // Update Skill
+    elseif (isset($_POST['update_skill'])) {
+        $data = ['skills' => $_POST['skill_name']];
+        $success = $model->update('skills_tbl', $data, 'skills_id=' . $_POST['skill_id']);
+        $message = $success ? 'Skill updated successfully.' : 'Failed to update skill.';
+    }
+    // Add Project with image handling
+    elseif (isset($_POST['create_project'])) {
+        $data = [
+            'project_title' => $_POST['project_title'],
+            'project_description' => $_POST['project_description']
+        ];
+
+        // Handle image upload
+        if (isset($_FILES['project_image']) && $_FILES['project_image']['error'] == UPLOAD_ERR_OK) {
+            $imageFile = $_FILES['project_image'];
+            $uploadResult = $model->uploadImage($imageFile);
+            if (is_string($uploadResult)) {
+                $data['project_image'] = $uploadResult;
+            } else {
+                $message = 'Image upload failed: ' . $uploadResult;
+                $_SESSION['message'] = $message;
+                $_SESSION['success'] = false;
+                header('Location: dashboard.php');
+                exit();
+            }
+        }
+
+        $success = $model->create('project_tbl', $data);
+        $message = $success ? 'Project added successfully.' : 'Failed to add project.';
+    }
+    // Update Project with image handling
+    elseif (isset($_POST['update_project'])) {
+        $data = [
+            'project_title' => $_POST['project_title'],
+            'project_description' => $_POST['project_description']
+        ];
+
+        // Handle image upload
+        if (isset($_FILES['project_image']) && $_FILES['project_image']['error'] == UPLOAD_ERR_OK) {
+            $imageFile = $_FILES['project_image'];
+            $uploadResult = $model->uploadImage($imageFile);
+            if (is_string($uploadResult)) {
+                $data['project_image'] = $uploadResult;
+            } else {
+                $message = 'Image upload failed: ' . $uploadResult;
+                $_SESSION['message'] = $message;
+                $_SESSION['success'] = false;
+                header('Location: dashboard.php');
+                exit();
+            }
+        }
+
+        $success = $model->update('project_tbl', $data, 'project_id=' . $_POST['project_id']);
+        $message = $success ? 'Project updated successfully.' : 'Failed to update project.';
+    }
+    // Update Contact
+    elseif (isset($_POST['update_contact'])) {
+        $data = [
+            'email_address' => $_POST['email_address'],
+            'twitter_handle' => $_POST['twitter_handle'],
+            'linkedin_handle' => $_POST['linkedin_handle'],
+            'discord_handle' => $_POST['discord_handle'],
+            'instagram_handle' => $_POST['instagram_handle']
+        ];
+        $success = $model->update('contact_tbl', $data, 'contact_id=1');
+        $message = $success ? 'Contact updated successfully.' : 'Failed to update contact.';
+    }
+    // Add Hobby
+    elseif (isset($_POST['create_hobby'])) {
+        $data = ['hobby_name' => $_POST['hobby']];
+        $success = $model->create('hobbies_tbl', $data);
+        $message = $success ? 'Hobby added successfully.' : 'Failed to add hobby.';
+    }
+    // Update Hobby
+    elseif (isset($_POST['update_hobby'])) {
+        $data = ['hobby_name' => $_POST['hobby_name']];
+        $success = $model->update('hobbies_tbl', $data, 'hobby_id=' . $_POST['hobby_id']);
+        $message = $success ? 'Hobby updated successfully.' : 'Failed to update hobby.';
+    }
+    // Delete Hobby
+    elseif (isset($_POST['delete_hobby'])) {
+        $success = $model->delete('hobbies_tbl', 'hobby_id=' . $_POST['hobby_id']);
+        $message = $success ? 'Hobby deleted successfully.' : 'Failed to delete hobby.';
+    }
+    // Delete Skill
+    elseif (isset($_POST['delete_skill'])) {
+        $success = $model->delete('skills_tbl', 'skills_id=' . $_POST['skill_id']);
+        $message = $success ? 'Skill deleted successfully.' : 'Failed to delete skill.';
+    }
+    // Delete Project
+    elseif (isset($_POST['delete_project'])) {
+        $success = $model->delete('project_tbl', 'project_id=' . $_POST['project_id']);
+        $message = $success ? 'Project deleted successfully.' : 'Failed to delete project.';
+    }
+
+    // Store message in session
+    $_SESSION['message'] = $message;
+    $_SESSION['success'] = $success;
+
+    // Redirect to avoid form resubmission on refresh
+    header('Location: dashboard.php');
+    exit();
+}
+
+// Fetch data for the dashboard
+$description = $model->read_single('aboutme_tbl', '*', 'aboutme_id=1');
+$skills = $model->readall('skills_tbl');
+$projects = $model->readall('project_tbl');
+$hobbies = $model->readall('hobbies_tbl');
+$contact = $model->read_single('contact_tbl', '*', 'contact_id=1');
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Dashboard</title>
+    <link rel="stylesheet" href="assets/css/dashstyles.css">
+</head>
+<body>
+    <h1>Admin Dashboard</h1>
+
+    <?php if (isset($_SESSION['message'])): ?>
+        <div class="notification <?php echo $_SESSION['success'] ? 'success' : 'error'; ?>">
+            <?php echo htmlspecialchars($_SESSION['message']); ?>
+        </div>
+        <?php unset($_SESSION['message']); unset($_SESSION['success']); ?>
+    <?php endif; ?>
+
+    <!-- Description Section -->
+    <section>
+        <h2>Description</h2>
+        <form method="POST">
+            <textarea name="description"><?php echo htmlspecialchars($description['aboutme_desc']); ?></textarea>
+            <button type="submit" name="create_description">Update Description</button>
+        </form>
+    </section>
+
+    <!-- Skills Section -->
+    <section>
+        <h2>Skills</h2>
+        <form method="POST">
+            <input type="text" name="skill" placeholder="New Skill">
+            <button type="submit" name="create_skill">Add Skill</button>
+        </form>
+        <ul>
+            <?php foreach ($skills as $skill): ?>
+                <li>
+                    <?php echo htmlspecialchars($skill['skills']); ?>
+                    <form method="POST" style="display:inline;">
+                        <input type="hidden" name="skill_id" value="<?php echo $skill['skills_id']; ?>">
+                        <input type="text" name="skill_name" value="<?php echo htmlspecialchars($skill['skills']); ?>">
+                        <button type="submit" name="update_skill">Update</button>
+                        <button type="submit" name="delete_skill">Delete</button>
+                    </form>
+                </li>
+            <?php endforeach; ?>
+        </ul>
+    </section>
+
+   <!-- Projects Section -->
+    <section>
+        <h2>Projects</h2>
+        <form method="POST" enctype="multipart/form-data">
+            <input type="text" name="project_title" placeholder="Project Title" required>
+            <textarea name="project_description" placeholder="Project Description" required></textarea>
+            <input type="file" name="project_image" accept="image/*">
+            <button type="submit" name="create_project">Add Project</button>
+        </form>
+
+        <div>
+            <?php foreach ($projects as $project): ?>
+                <div>
+                    <form method="POST" enctype="multipart/form-data">
+                        <input type="hidden" name="project_id" value="<?php echo $project['project_id']; ?>">
+                        <input type="text" name="project_title" value="<?php echo htmlspecialchars($project['project_title']); ?>" required>
+                        <textarea name="project_description" required><?php echo htmlspecialchars($project['project_description']); ?></textarea>
+                        <?php if (!empty($project['project_image'])): ?>
+                            <img src="uploads/<?php echo htmlspecialchars($project['project_image']); ?>" alt="<?php echo htmlspecialchars($project['project_title']); ?>" style="width:100px;">
+                        <?php endif; ?>
+                        <input type="file" name="project_image" accept="image/*">
+                        <button type="submit" name="update_project">Update Project</button>
+                        <button type="submit" name="delete_project">Delete Project</button>
+                    </form>
+                </div>
+            <?php endforeach; ?>
+        </div>
+    </section>
+
+    <!-- Hobbies Section -->
+    <section>
+        <h2>Hobbies</h2>
+        <form method="POST">
+            <input type="text" name="hobby" placeholder="New Hobby">
+            <button type="submit" name="create_hobby">Add Hobby</button>
+        </form>
+        <ul>
+            <?php foreach ($hobbies as $hobby): ?>
+                <li>
+                    <?php echo htmlspecialchars($hobby['hobby_name']); ?>
+                    <form method="POST" style="display:inline;">
+                        <input type="hidden" name="hobby_id" value="<?php echo $hobby['hobby_id']; ?>">
+                        <input type="text" name="hobby_name" value="<?php echo htmlspecialchars($hobby['hobby_name']); ?>">
+                        <button type="submit" name="update_hobby">Update</button>
+                        <button type="submit" name="delete_hobby">Delete</button>
+                    </form>
+                </li>
+            <?php endforeach; ?>
+        </ul>
+    </section>
+
+    <!-- Contact Section -->
+    <section>
+        <h2>Contact</h2>
+        <form method="POST">
+            <input type="email" name="email_address" placeholder="Email Address" value="<?php echo htmlspecialchars($contact['email_address']); ?>">
+            <input type="text" name="twitter_handle" placeholder="Twitter Handle" value="<?php echo htmlspecialchars($contact['twitter_handle']); ?>">
+            <input type="text" name="linkedin_handle" placeholder="LinkedIn Handle" value="<?php echo htmlspecialchars($contact['linkedin_handle']); ?>">
+            <input type="text" name="discord_handle" placeholder="Discord Handle" value="<?php echo htmlspecialchars($contact['discord_handle']); ?>">
+            <input type="text" name="instagram_handle" placeholder="Instagram Handle" value="<?php echo htmlspecialchars($contact['instagram_handle']); ?>">
+            <button type="submit" name="update_contact">Update Contact</button>
+        </form>
+    </section>
+</body>
+</html>
